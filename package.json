@@ -8,7 +8,8 @@
   },
   "dependencies": {
     "express": "^4.15.3",
-    "random-js": "^1.0.8"
+    "random-js": "^1.0.8",
+    "jsonfile": "^3.0.1"
   },
   "engines": {
     "node": "8.x"
