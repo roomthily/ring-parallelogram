@@ -9,7 +9,9 @@
   "dependencies": {
     "express": "^4.15.3",
     "random-js": "^1.0.8",
-    "jsonfile": "^3.0.1"
+    "jsonfile": "^3.0.1",
+    "node-rest-client": "^3.1.0",
+    "geojson": "^0.5.0"
   },
   "engines": {
     "node": "8.x"
