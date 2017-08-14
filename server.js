@@ -8,207 +8,147 @@ var jsonfile = require('jsonfile'),
     client = require('node-rest-client').Client;
 
 app.use(express.static('public'));
+app.use('/geojsons', express.static('geojsons'));
 
 // http://expressjs.com/en/starter/basic-routing.html
 app.get("/", function (request, response) {
   response.sendFile(__dirname + '/views/index.html');
 });
+app.get("/trails.geojson", function (request, response) {
+  response.sendFile(__dirname + '/trail_elevations.geojson');
+});
+
+app.get('/merge', (req, res) => {
+  // merge any geojsons (that aren't empty) into one
+  // file for easier cesium viz
+  fs.readdir('./geojsons', function(err, files) {
+    var features = [];
+    var l = files.length;
+    console.log('num files: ',files.length);
+    files.forEach(function(f) {
+      var stats = fs.statSync('./geojsons/'+f);
+      console.log(f, stats.size);
+
+      l--;
+      
+      if (stats.size > 0) {
+        console.log('ok++', l);
+        var s = fs.readFileSync('./geojsons/' + f);
+        if (s) {
+          var data = JSON.parse(s);
+          features.push(data);
+        }
+      }
+      if (l < 1) { _f(res, features);}      
+    });
+  });
+});
+
+function _f(res, features) {
+  console.log(features.length);
+  var output = {type: "FeatureCollection", features: features};
+  jsonfile.writeFile('./trail_elevations.geojson', output);
+  
+  res.send('maybe done');
+}
 
 app.get('/elevate', (req, res) => {
   // the google elevation api which gives rate limits
   
+  var url = 'https://maps.googleapis.com/maps/api/elevation/json';
+  var key = process.env.GOOGLE_KEY;
   
-});
-
-const profile_url = 'http://open.mapquestapi.com/elevation/v1/profile';
-const key = process.env.MAPQUEST_KEY;
-
-app.get("/elevate_mq", (req, res) => {
-  console.log('hello');
+  // https://developers.google.com/maps/documentation/elevation/usage-limits
+  // 512 pts per location
+  // 50 req/sec
+  // 2,500 req a day -> might be 2,500 *pts* per day
+  //
+  // locations=
+  // lat,lng|lat,lng
   
-  // for the request, the mapquest key MUST be a query param 
-  // and not in the post body.
-  // using post for the charlength of the routes
+  var c = new client();
   
+  // build the request (get?locations=&key=)
   jsonfile.readFile('./trails.geojson', function(err, data) {
-    if (err) {
-      console.log(err);
-      res.send('nope');
-    }
-    
-    var c = new client();
-    
-    // let's not process the ones already done
-    // (rate- and transaction-limited api)
-    data.features.slice(0,2).forEach(function(feature) {
-      var fid = feature.properies.id;
-      if (fs.existsSync('./.data/' + fid + '.geojson')) {
+    data.features.forEach(function(feature) {
+      var fid = feature.properties.id;
+      if (fs.existsSync('./geojsons/' + fid + '.geojson')) {
         return;
       }
       
-      // get the elevation and dump the single geojson
+      if (feature.geometry.coordinates.length > 512) {
+        // do nothing right now
+        console.log('feature '+ fid + 'is too long');
+        return;
+      }
+      
       var remapped = feature.geometry.coordinates.map((pt) => {
         return pt[1] + ',' + pt[0];
-      }).reduce((i, j) => {
+      }).reduce((i,j) => {
         return i.concat(j);
-      }, []).join(',');
-      
+      }, []).join('|');
       
       var args = {
-        parameters: {key: key}, // the query params
-        data: {
-          latLngCollection: remapped,
-          inShapeFormat: 'raw'
+        parameters: {
+          key: key,
+          locations: remapped
         }
       };
       
-      // if the info.statuscode == 601 or 602, no data for the points
-      c.post(profile_url, args, function(mq_data, mq_response) {
-        if (mq_data.info.statuscode == 601 || mq_data.info.statuscode == 602) {
-          console.log('no elevation data for: ', fid);
-          setTimeout(function() {
-            console.log('processed ' + fid + ' and waiting...');
-          }, 5000);
-          return;
-        }
-        if (mq_data.info.messages.length > 0) {
-          console.log('messages?', mq_data.info.messages);
-          setTimeout(function() {
-            console.log('processed ' + fid + ' and waiting...');
-          }, 5000);
+      c.get(url, args, function(g_data, g_response) {
+        if (g_data.status != 'OK') {
+          console.log('failed request ('+fid+')', g_data.status);
+          if (g_data.status == 'OVER_QUERY_LIMIT') {
+            console.log(g_data);
+            res.send('break it down');
+          }
           return;
         }
         
-        // parse the response and dump to a file
-        var new_feature = Array.from(_parse_mq(fid, feature.geometry.coordinates, mq_data));
-        var new_geojson = geojson.parse(new_feature, {'LineString': 'points', include: ['id']});
-        
-        jsonfile.writeFile('./geojsons/' + fid + './geojson', new_geojson, {space: 2}, function(err) {
-          console.log('json write err: ', err);
+        // dump the response as well
+        jsonfile.writeFile('./responses/'+fid+'.json', g_data, function(err) {
+          if (err) {
+            console.log('json write err: ', err);
+          }
         });
+        
+        // {
+        //    "results" : [
+        //       {
+        //          "elevation" : 1608.637939453125,
+        //          "location" : {
+        //             "lat" : 39.73915360,
+        //             "lng" : -104.98470340
+        //          },
+        //          "resolution" : 4.771975994110107
+        //       }
+        //    ],
+        //    "status" : "OK"
+        // }
+        var new_features = {
+          id: fid,
+          points: g_data.results.map((obj) => {
+            return [obj.location.lng, obj.location.lat, obj.elevation];
+          })
+        };
+        var new_geojson = geojson.parse(new_features, {'LineString': 'points', include: ['id']});
+        
+        if (new_geojson != {}) {
+          jsonfile.writeFile('./geojsons/'+fid + '.geojson', new_geojson, function(err) {
+            if (err) {
+              console.log('geojson write err: ', err);
+            }
+          });
+        }
+        
+        setTimeout(function() {
+          console.log('post-'+fid+' waiting...');
+        }, 1000);
       });
-      
-      // wait a little bit for the next for the rate-limit
-      // that i actually do not know (time-wise or #points in the array-wise)
-      setTimeout(function() {
-        console.log('processed ' + fid + ' and waiting...');
-      }, 5000);
     });
-    
-    
-    console.log(data.features.length);
-    var feature = data.features[data.features.length-2];
-    res.send(feature);
+    res.send('done-ish');
   });
-}); 
-
-app.get('/test', (req, res) => {
-  // testing the parser
-  var fid = 'blobbo';
-  
-  
-  var inputs = [
-    [-105.69107294082642,39.96401374138905],
-    [-105.69525718688965,39.94585473665865]
-  ];
-
-  var output = {
-    "elevationProfile": [
-        {
-            "distance": 0,
-            "height": 3604
-        },
-        {
-            "distance": 2.0527,
-            "height": 3645
-        }
-    ],
-    "shapePoints": [
-        39.964014,
-        -105.691073,
-        39.945855,
-        -105.695257
-    ],
-    "info": {
-        "statuscode": 0,
-        "copyright": {
-            "imageAltText": "© 2017 MapQuest, Inc.",
-            "imageUrl": "http://api.mqcdn.com/res/mqlogo.gif",
-            "text": "© 2017 MapQuest, Inc."
-        },
-        "messages": []
-    }
-  };
-  
-  var new_features = Array.from(_parse_mq(fid, inputs, output));
-  
-  res.send(geojson.parse(new_features, {'LineString': 'points', include: ['id']}));
 });
-
-function *_parse_mq(fid, points, data) {
-  // points: array[[x,y]]
-  // data: response from mapquest
-  // remap to a geojson structure with elevation 
-  // as a property
-  
-  var feature = {
-    id: fid,
-    points: []
-  };
-  
-  var profile = data['elevationProfile'];
-  
-  for (var i=0; i < points.length; i++) {
-    var point = points[i];
-    if (profile[i].height != -32768) {
-      // that is mapquest's nodata value
-      point.push(profile[i].height);
-    }
-    // to a point of x, y, elev(m)
-    feature.points.push(point);
-  }
-  
-  yield feature;
-}
-
-/*
-http://open.mapquestapi.com/elevation/v1/profile
-get
-
-key
-latLngCollection: lng,lat,lng,lat
-
-
-the response:
-{
-    "elevationProfile": [
-        {
-            "distance": 0,
-            "height": 3604
-        },
-        {
-            "distance": 2.0527,
-            "height": 3645
-        }
-    ],
-    "shapePoints": [
-        39.964014,
-        -105.691073,
-        39.945855,
-        -105.695257
-    ],
-    "info": {
-        "statuscode": 0,
-        "copyright": {
-            "imageAltText": "© 2017 MapQuest, Inc.",
-            "imageUrl": "http://api.mqcdn.com/res/mqlogo.gif",
-            "text": "© 2017 MapQuest, Inc."
-        },
-        "messages": []
-    }
-}
-*/
-
 
 
 // listen for requests :)
