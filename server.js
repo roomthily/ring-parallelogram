@@ -12,7 +12,8 @@ app.use('/geojsons', express.static('geojsons'));
 
 // http://expressjs.com/en/starter/basic-routing.html
 app.get("/", function (request, response) {
-  response.sendFile(__dirname + '/views/index.html');
+  // response.sendFile(__dirname + '/views/index.html');
+  response.sendFile(__dirname + '/views/extruded.html');
 });
 app.get("/trails.geojson", function (request, response) {
   response.sendFile(__dirname + '/trail_elevations.geojson');
