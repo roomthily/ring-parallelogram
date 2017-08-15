@@ -21,6 +21,18 @@ h2 {
   margin-bottom: 2em;
 }
 
+#map.gl {
+  width: 90vw;
+  height: 70vw;
+  
+  position:absolute;
+  top: 4em;
+  left:2em;
+  overflow:hidden;
+  padding: 0;
+}
+
+/* for cesium *UGH* */
 #map {
   width: 800px;
   height: 800px;
